@@ -4,6 +4,8 @@ test project for .net memory allocation in docker
 https://hub.docker.com/r/schaefferlinkbit/dotnet_mem_allocator/
 
 # parameters
+parameters | default | description
+--- | --- | ---
 alloc_mb | 10 | number MB allocated
 sleep | 1000 | sleep milliseconds between allocations
 free | true | set to true if memory should be freed
