@@ -1,9 +1,15 @@
-FROM gitlab.linkbit.io:25000/linkbit/dotnet-docker/dotnet:2.1-runtime-02ae576
+# Build this Dockerfile from the root directory of the project, not from the project folder:
+# docker build --target app -t docker.host:net8-clientgc -f dotnet_mem_allocator_client_GC/Dockerfile .
+FROM mcr.microsoft.com/dotnet/sdk:8.0 AS builder
+WORKDIR /src
+COPY ./ .
+RUN dotnet restore .
+WORKDIR /src/dotnet_mem_allocator_client_GC
+RUN dotnet publish "dotnet_mem_allocator_client_GC.csproj" -c Release -o /app/publish
 
+
+FROM mcr.microsoft.com/dotnet/runtime:8.0 AS app
 WORKDIR /app
-
-COPY . ./
-
-EXPOSE 7777
-
+COPY --from=builder /app/publish .
+USER app
 ENTRYPOINT ["dotnet", "dotnet_mem_allocator_client_GC.dll"]
