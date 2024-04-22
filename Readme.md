@@ -1,13 +1,55 @@
-# .net memory allocator
-test project for .net memory allocation in docker  
+# Container Memory Performance Lab
 
-https://hub.docker.com/r/schaefferlinkbit/dotnet_mem_allocator/
+## Compare Server GC...
+```sh
+kubectl \
+    -n cplc \
+    run dotnet-mem-allocator \
+    --rm -i --tty \
+    --image='x' \
+    --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"dotnet-mem-allocator","image":"nmmarco/dotnet-mem-allocator:net8-servergc","imagePullPolicy":"Always","resources":{"limits":{"memory":"700Mi"}}}]}}'
+```
 
-# parameters
-parameters | default | description
---- | --- | ---
-alloc_mb | 10 | number MB allocated
-sleep | 1000 | sleep milliseconds between allocations
-free | true | set to true if memory should be freed
-force_full_collection | false | controlling the forceFullCollection parameter of System.GC.GetTotalMemory
-collect | 0 | starts GC every n cycles (cycle % collect == 0)
+## ... versus Client GC
+```sh
+kubectl \
+    -n cplc \
+    run dotnet-mem-allocator \
+    --rm -i --tty \
+    --image='x' \
+    --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"dotnet-mem-allocator","image":"nmmarco/dotnet-mem-allocator:net8-clientgc","imagePullPolicy":"Always","resources":{"limits":{"memory":"700Mi"}}}]}}'
+```
+
+## Bump into dotnet System.OutOfMemoryException
+```sh
+kubectl \
+    -n cplc \
+    run dotnet-mem-allocator \
+    --rm -i --tty \
+    --image='x' \
+    --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"dotnet-mem-allocator","image":"nmmarco/dotnet-mem-allocator:net8-servergc","imagePullPolicy":"Always","resources":{"limits":{"memory":"100Mi"}}}]}}'
+```
+
+## Get OOMKilled
+```sh
+kubectl \
+    -n cplc \
+    run dotnet-mem-allocator \
+    -i --tty \
+    --image='x' \
+    --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"dotnet-mem-allocator","image":"nmmarco/dotnet-mem-allocator:net8-servergc","imagePullPolicy":"Always","restartPolicy":"Never","resources":{"limits":{"memory":"100Mi"}},"env":[{"name":"DOTNET_GCHeapHardLimit","value":"1F400000"}]}]}}'
+
+kubectl -n cplc delete pod dotnet-mem-allocator
+```
+
+## No Limits -- Go rogue and get evicted!
+```sh
+kubectl \
+    -n cplc \
+    run dotnet-mem-allocator \
+    -i --tty \
+    --image='x' \
+    --overrides='{"apiVersion":"v1","spec":{"containers":[{"name":"dotnet-mem-allocator","image":"nmmarco/dotnet-mem-allocator:net8-servergc","imagePullPolicy":"Always","command":["dotnet"],"args":["DotnetMemAllocator.dll","--max_size=4294967296","--max_alloc=524288000","--large_alloc_pct=10"]}]}}'
+
+kubectl -n cplc delete pod dotnet-mem-allocator
+```

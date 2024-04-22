@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 
@@ -11,7 +10,7 @@ static class Program
 {
     const int MB_FACTOR = 1024 * 1024;
 
-    static void Main(string[] args)
+    static async Task Main(string[] args)
     {
         var config = new ConfigurationBuilder().AddCommandLine(args).Build();
 
@@ -21,24 +20,30 @@ static class Program
             Environment.Exit(0);
         };
 
-        var maxAlloc = config.GetValue("max_alloc", 10 * MB_FACTOR);
-        var minAlloc = config.GetValue("min_alloc", 10);
-        var maxSize = config.GetValue("max_size", 500 * MB_FACTOR);
-        var sleepMs = config.GetValue("sleep", 250);
-        var leak = config.GetValue("leak", false);
-        var forceFullCollection = config.GetValue("force_full_collection", false);
-        var collect = config.GetValue("collect", 0);
+        Console.WriteLine("Waiting 5 seconds for the kubectl tty to attach...");
+        await Task.Delay(5000);
 
+        // CLI Parameters
+        long maxAlloc = config.GetValue<long>("max_alloc", 10 * MB_FACTOR);
+        long minAlloc = config.GetValue<long>("min_alloc", 10);
+        long maxSize = config.GetValue<long>("max_size", 500 * MB_FACTOR);
+        int largeAllocPct = config.GetValue("large_alloc_pct", 2);
+        int sleepMs = config.GetValue("sleep", 250);
+        bool leak = config.GetValue("leak", false);
+        bool forceFullCollection = config.GetValue("force_full_collection", false);
+        int collect = config.GetValue("collect", 0);
+
+        // Print Execution Parameters
 #if CLIENT_GC
-        Console.WriteLine("server GC: false");
+        Console.WriteLine("Server GC: false");
 #endif
 #if SERVER_GC
-        Console.WriteLine("server GC: true");
+        Console.WriteLine("Server GC: true");
 #endif
 
-        Console.WriteLine("Max allocated bytes: " + maxAlloc.ToString("N0"));
-        Console.WriteLine("Min allocated bytes: " + minAlloc.ToString("N0"));
-        Console.WriteLine("Max total in-use bytes: " + maxSize.ToString("N0"));
+        Console.WriteLine("Max allocated bytes: " + HumanReadableSize(maxAlloc));
+        Console.WriteLine("Min allocated bytes: " + HumanReadableSize(minAlloc));
+        Console.WriteLine("Max total in-use bytes: " + HumanReadableSize(maxSize));
         Console.WriteLine("Simulate a memory leak: " + leak);
         Console.WriteLine("Sleep ms: " + sleepMs.ToString("N0"));
         Console.WriteLine("Force full collection: " + forceFullCollection);
@@ -48,6 +53,7 @@ static class Program
         }
         Console.WriteLine("\npress Ctrl+C to exit\n");
 
+        // Keep track of bytes allocated and deallocated in the loop
         long trackedTotalMemory = 0;
 
         try
@@ -55,22 +61,37 @@ static class Program
             var rand = new Random();
             List<byte[]> storedArrays = new List<byte[]>();
 
+            // If we're manually forcing GC every so many iterations we need to track the loop count
             int iLoop = 0;
             while (true)
             {
-                var allocationSize = AllocationSize(minAlloc, maxAlloc, maxSize, rand);
-                trackedTotalMemory += allocationSize;
-                var array = new byte[allocationSize];
-                var value = (byte)rand.Next();
-                Parallel.ForEach(
-                    array,
-                    (item) =>
-                    {
-                        item = value;
-                    }
+                Console.Write(iLoop.ToString().PadRight(6));
+
+                // Allocate some memory
+                var allocationSize = AllocationSize(
+                    minAlloc,
+                    maxAlloc,
+                    maxSize,
+                    largeAllocPct,
+                    rand
                 );
+                trackedTotalMemory += allocationSize;
+                Console.Write(Attempting(allocationSize, trackedTotalMemory));
+                byte[] array;
+                try
+                {
+                    array = new byte[allocationSize];
+                }
+                catch (OutOfMemoryException)
+                {
+                    trackedTotalMemory -= allocationSize;
+                    Console.WriteLine("Out of memory exception");
+                    continue;
+                }
+
                 rand.NextBytes(array);
 
+                // Maybe (if we're not simulating a leak) deallocate some memory
                 long deallocated = 0;
                 if (!leak)
                 {
@@ -83,25 +104,30 @@ static class Program
                         }
                     }
                 }
-                trackedTotalMemory -= deallocated;
 
+                // Keep track of how much memory we are using and add the new array to the list
+                // so it doesn't get garbage collected too soon.
+                trackedTotalMemory -= deallocated;
                 storedArrays.Add(array);
 
+                // If we're manually forcing a full GC, do it now
                 if (collect > 0 && iLoop % collect == 0)
                 {
                     Console.WriteLine("run GC");
                     GC.Collect();
                 }
 
+                // Write some statistics to the console
                 Console.WriteLine(
                     TotalMemory()
                         + TrackedMemory(trackedTotalMemory)
                         + Allocated(array)
                         + Deallocated(deallocated)
-                        + CollectionCount()
+                        + GCCount()
                 );
 
-                Thread.Sleep(sleepMs);
+                // Wait, then repeat
+                await Task.Delay(sleepMs);
                 iLoop++;
             }
         }
@@ -109,18 +135,20 @@ static class Program
         {
             Console.WriteLine("Exception: " + ex.ToString());
         }
-
-        //Console.WriteLine("parameters:");
-        //Console.WriteLine("\talloc_mb: number of MB allocated, default 10MB");
-        //Console.WriteLine("\tfree: if memory should be deallocated, default true");
-        //Console.WriteLine("\tsleep: number of ms to sleep, default 1000 ms");
     }
 
-    private static long AllocationSize(int minAlloc, int maxAlloc, long maxSize, Random rand)
+    private static long AllocationSize(
+        long minAlloc,
+        long maxAlloc,
+        long maxSize,
+        int largeAllocPct,
+        Random rand
+    )
     {
         const int logBase = 1024;
 
-        if (rand.Next(0, 100) < 2)
+        // Take us half way to the max size (our possibly unenforced memory limit)
+        if (rand.Next(0, 100) < largeAllocPct)
         {
             return Math.Max(0, (maxSize / 2) - GC.GetTotalMemory(false));
         }
@@ -134,6 +162,10 @@ static class Program
         return root * (long)Math.Pow(logBase, exponent);
     }
 
+    private static string Attempting(long size, long total) =>
+        "Attempting: "
+        + (HumanReadableSize(size, 0) + " / " + HumanReadableSize(total)).PadRight(21);
+
     private static string TotalMemory() =>
         "GC Total Memory: " + HumanReadableSize(GC.GetTotalMemory(false)).PadRight(12);
 
@@ -146,7 +178,7 @@ static class Program
     private static string Deallocated(long deallocated) =>
         "Deallocated: " + HumanReadableSize(deallocated).PadRight(12);
 
-    private static string HumanReadableSize(long size)
+    private static string HumanReadableSize(long size, int precision = 2)
     {
         string[] sizes = { "B", "KB", "MB", "GB", "TB" };
         double len = size;
@@ -157,10 +189,12 @@ static class Program
             len = len / 1024;
         }
 
-        return $"{len:N2} {sizes[order]}";
+        var formattedLength = len.ToString("N" + precision);
+
+        return formattedLength + " " + sizes[order];
     }
 
-    private static string CollectionCount()
+    private static string GCCount()
     {
         var output = new StringBuilder();
 
