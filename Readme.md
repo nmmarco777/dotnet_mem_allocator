@@ -1,5 +1,9 @@
 # Container Memory Performance Lab
 
+## Helpful Github issues:
+- https://github.com/dotnet/runtime/issues/61076
+- https://github.com/dotnet/runtime/issues/851
+
 ## Compare Server GC...
 ```sh
 kubectl \

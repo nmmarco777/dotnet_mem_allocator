@@ -97,7 +97,7 @@ static class Program
                 {
                     for (int i = 0; i < storedArrays.Count; i++)
                     {
-                        if (rand.Next(0, 100) > 80)
+                        if (rand.Next(0, 100) < 20)
                         {
                             deallocated += storedArrays[i].Length;
                             storedArrays.RemoveAt(i);
